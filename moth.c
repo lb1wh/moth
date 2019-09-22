@@ -4,7 +4,7 @@
 #include <stdlib.h>
 
 /* Possible Moth value types */
-enum { MOTHVAL_NUM, MOTHVAL_ERR, MOTHVAL_SYM, MOTHVAL_SEXPR };
+enum { MOTHVAL_NUM, MOTHVAL_ERR, MOTHVAL_SYM, MOTHVAL_SEXPR, MOTHVAL_QEXPR };
 
 struct mothval {
     int type;
@@ -77,6 +77,15 @@ mothval *mothval_sexpr(void)
     return v;
 }
 
+mothval *mothval_qexpr(void)
+{
+    mothval *v = malloc(sizeof(mothval));
+    v->type = MOTHVAL_QEXPR;
+    v->count = 0;
+    v->cell = NULL;
+    return v;
+}
+
 void mothval_del(mothval *v)
 {
     switch (v->type) {
@@ -86,6 +95,8 @@ void mothval_del(mothval *v)
     case MOTHVAL_ERR: free(v->err); break;
     case MOTHVAL_SYM: free(v->sym); break;
 
+    /* If Qexpr or Sexpr, delete all elements inside */
+    case MOTHVAL_QEXPR:
     case MOTHVAL_SEXPR:
         for (int i = 0; i < v->count; i++) {
             mothval_del(v->cell[i]);
@@ -122,12 +133,15 @@ mothval *mothval_read(mpc_ast_t *t)
     /* If root or sexpr, then create an empty list */
     mothval *x = NULL;
     if (strcmp(t->tag, ">") == 0) { x = mothval_sexpr(); }
-    if (strstr(t->tag, "sexpr")) {x = mothval_sexpr(); }
+    if (strstr(t->tag, "sexpr")) { x = mothval_sexpr(); }
+    if (strstr(t->tag, "qexpr")) { x = mothval_qexpr(); }
 
     /* Fill this list with any valid expression contained within */
     for (int i = 0; i < t->children_num; i++) {
         if (strcmp(t->children[i]->contents, "(") == 0) { continue; }
         if (strcmp(t->children[i]->contents, ")") == 0) { continue; }
+        if (strcmp(t->children[i]->contents, "{") == 0) { continue; }
+        if (strcmp(t->children[i]->contents, "}") == 0) { continue; }
         if (strcmp(t->children[i]->tag, "regex") == 0) { continue; }
         x = mothval_add(x, mothval_read(t->children[i]));
     }
@@ -183,6 +197,7 @@ void mothval_print(mothval *v)
     case MOTHVAL_ERR:   printf("Error: %s", v->err); break;
     case MOTHVAL_SYM:   printf("%s", v->sym); break;
     case MOTHVAL_SEXPR: mothval_expr_print(v, '(', ')'); break;
+    case MOTHVAL_QEXPR: mothval_expr_print(v, '{', '}'); break;
     }
 }
 
@@ -226,49 +241,6 @@ mothval *builtin_op(mothval *a, char *op)
     mothval_del(a);
     return x;
 }
-
-//mothval eval_op(mothval x, char *op, mothval y) {
-//    if (x.type == MOTHVAL_ERR) { return x; }
-//    if (y.type == MOTHVAL_ERR) { return y; }
-//
-//    if (strcmp(op, "+") == 0) { return mothval_num(x.num + y.num); }
-//    if (strcmp(op, "-") == 0) { return mothval_num(x.num - y.num); }
-//    if (strcmp(op, "*") == 0) { return mothval_num(x.num * y.num); }
-//    if (strcmp(op, "/") == 0) {
-//        return y.num == 0
-//            ? mothval_err(MOTHERR_DIV_ZERO)
-//            : mothval_num(x.num / y.num);
-//    }
-//    return mothval_err(MOTHERR_BAD_OP);
-//}
-
-//mothval eval(mpc_ast_t *t)
-//{
-//    if (strstr(t->tag, "number")) {
-//        /* Check if the conversion fails*/
-//        errno = 0;
-//        long x = strtol(t->contents, NULL, 10);
-//        return errno != ERANGE ? mothval_num(x) : mothval_err(MOTHERR_BAD_NUM);
-//    }
-//
-//    /* When an expression is not a number, the operator is always
-//       the second child. The first child is always '(', as defined
-//       in our grammar for expressions:
-//       expr     : <number> | '(' <operator> <expr>+ ')'; */
-//    char *op = t->children[1]->contents;
-//
-//    /* The third child */
-//    mothval x = eval(t->children[2]);
-//
-//    int i = 3;
-//    while (strstr(t->children[i]->tag, "expr")) {
-//        x = eval_op(x, op, eval(t->children[i]));
-//        i++;
-//    }
-//
-//    return x;
-//}
-
 
 mothval *mothval_eval(mothval *v);
 
@@ -317,19 +289,21 @@ int main(int argc, char *argv[])
     mpc_parser_t *Number = mpc_new("number");
     mpc_parser_t *Symbol = mpc_new("symbol");
     mpc_parser_t *Sexpr = mpc_new("sexpr");
+    mpc_parser_t *Qexpr = mpc_new("qexpr");
     mpc_parser_t *Expr = mpc_new("expr");
     mpc_parser_t *Moth = mpc_new("moth");
 
     /* Define language using parsers */
     mpca_lang(MPCA_LANG_DEFAULT,
-              "                                                    \
-               number   : /-?[0-9]+/ ;                             \
-               symbol   : '+' | '-' | '*' | '/' ;                  \
-               sexpr    : '(' <expr>* ')' ;                        \
-               expr     : <number> | <symbol> | <sexpr> ;          \
-               moth     : /^/ <expr>* /$/ ;                        \
+              "                                                     \
+               number   : /-?[0-9]+/ ;                              \
+               symbol   : '+' | '-' | '*' | '/' ;                   \
+               sexpr    : '(' <expr>* ')' ;                         \
+               qexpr    : '{' <expr>* '}' ;                         \
+               expr     : <number> | <symbol> | <sexpr> | <qexpr> ; \
+               moth     : /^/ <expr>* /$/ ;                         \
               ",
-              Number, Symbol, Sexpr, Expr, Moth);
+              Number, Symbol, Sexpr, Qexpr, Expr, Moth);
 
     puts("Moth v0.1\n");
     puts("Press Ctrl-C to exit\n");
@@ -353,7 +327,7 @@ int main(int argc, char *argv[])
     }
 
     /* Undefine and delete parsers */
-    mpc_cleanup(5, Number, Symbol, Sexpr, Expr, Moth);
+    mpc_cleanup(6, Number, Symbol, Sexpr, Qexpr, Expr, Moth);
 
     return 0;
 }
