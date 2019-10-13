@@ -243,6 +243,7 @@ mothval *builtin_op(mothval *a, char *op)
 }
 
 mothval *mothval_eval(mothval *v);
+mothval *builtin(mothval *a, char *func);
 
 mothval* mothval_eval_sexpr(mothval *v)
 {
@@ -270,7 +271,7 @@ mothval* mothval_eval_sexpr(mothval *v)
     }
 
     /* Call builtin with operator */
-    mothval *result = builtin_op(v, f->sym);
+    mothval *result = builtin(v, f->sym);
     mothval_del(f);
     return result;
 }
@@ -281,6 +282,106 @@ mothval *mothval_eval(mothval *v) {
 
     /* All other mothval types remain the same */
     return v;
+}
+
+#define LASSERT(args, cond, err) \
+    if (!(cond)) { mothval_del(args); return mothval_err(err); }
+
+mothval* builtin_head(mothval *a)
+{
+    LASSERT(a, a->count == 1,
+            "The function 'head' passed too many arguments!");
+
+    LASSERT(a, a->cell[0]->type == MOTHVAL_QEXPR, // NOT-EQUALS?
+            "Function 'head' passed incorrect types!");
+
+    LASSERT(a, a->cell[0]->count != 0,
+            "Function 'head' passed {}!");
+
+    /* Otherwise, take first argument */
+    mothval *v = mothval_take(a, 0);
+
+    while (v->count > 1) { mothval_del(mothval_pop(v, 1)); }
+    return v;
+}
+
+mothval *builtin_tail(mothval *a)
+{
+    LASSERT(a, a->count == 1,
+            "Function 'tail' passed too many arguments! ");
+
+    LASSERT(a, a->cell[0]->type == MOTHVAL_QEXPR,
+            "Function 'tail' passed incorrect type!");
+
+    LASSERT(a, a->cell[0]->count != 0,
+            "Function 'tail' passed {}!");
+
+    /* Take first arguments */
+    mothval *v = mothval_take(a, 0);
+
+    /* Delete the first element and return */
+    mothval_del(mothval_pop(v, 0));
+    return v;
+}
+
+mothval *builtin_list(mothval *a)
+{
+    a->type = MOTHVAL_QEXPR;
+    return a;
+}
+
+mothval *builtin_eval(mothval *a)
+{
+    LASSERT(a, a->count == 1,
+            "Function 'eval' passed too many arguments!");
+
+    LASSERT(a, a->cell[0]->type == MOTHVAL_QEXPR,
+            "Function 'eval' passed incorrect type!");
+
+    mothval *x = mothval_take(a, 0);
+    x->type = MOTHVAL_SEXPR;
+    return mothval_eval(x);
+}
+
+mothval *mothval_join(mothval *x, mothval *y)
+{
+    /* For each cell in 'y', add it to 'x' */
+    while (y->count) {
+        x = mothval_add(x, mothval_pop(y, 0));
+    }
+
+    /* Delete the empty 'y' and return 'x' */
+    mothval_del(y);
+    return x;
+}
+
+mothval *builtin_join(mothval *a)
+{
+    for (int i = 0; i < a->count; i++) {
+        LASSERT(a, a->cell[i]->type == MOTHVAL_QEXPR,
+                "Function 'join' passed incorrect type!");
+    }
+
+    mothval *x = mothval_pop(a, 0);
+
+    while (a->count) {
+        x = mothval_join(x, mothval_pop(a, 0));
+    }
+
+    mothval_del(a);
+    return x;
+}
+
+mothval *builtin(mothval *a, char *func)
+{
+    if (strcmp("list", func) == 0) { return builtin_list(a); }
+    if (strcmp("head", func) == 0) { return builtin_head(a); }
+    if (strcmp("tail", func) == 0) { return builtin_tail(a); }
+    if (strcmp("join", func) == 0) { return builtin_join(a); }
+    if (strcmp("eval", func) == 0) { return builtin_eval(a); }
+    if (strstr("+-/*", func)) { return builtin_op(a, func); }
+    mothval_del(a);
+    return mothval_err("Unknown function!");
 }
 
 int main(int argc, char *argv[])
@@ -295,13 +396,14 @@ int main(int argc, char *argv[])
 
     /* Define language using parsers */
     mpca_lang(MPCA_LANG_DEFAULT,
-              "                                                     \
-               number   : /-?[0-9]+/ ;                              \
-               symbol   : '+' | '-' | '*' | '/' ;                   \
-               sexpr    : '(' <expr>* ')' ;                         \
-               qexpr    : '{' <expr>* '}' ;                         \
-               expr     : <number> | <symbol> | <sexpr> | <qexpr> ; \
-               moth     : /^/ <expr>* /$/ ;                         \
+              "                                                         \
+               number   : /-?[0-9]+/ ;                                  \
+               symbol   : \"list\" | \"head\" | \"tail\"                \
+                        | \"join\" | \"eval\" | '+' | '-' | '*' | '/' ; \
+               sexpr    : '(' <expr>* ')' ;                             \
+               qexpr    : '{' <expr>* '}' ;                             \
+               expr     : <number> | <symbol> | <sexpr> | <qexpr> ;     \
+               moth     : /^/ <expr>* /$/ ;                             \
               ",
               Number, Symbol, Sexpr, Qexpr, Expr, Moth);
 
