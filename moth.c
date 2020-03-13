@@ -3,8 +3,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+struct mval;
+struct menv;
+typedef struct mval mval;
+typedef struct menv menv;
+
+struct menv {
+    int count;
+    char **syms;
+    mothval **vals;
+};
+
 /* Possible Moth value types */
-enum { MOTHVAL_NUM, MOTHVAL_ERR, MOTHVAL_SYM, MOTHVAL_SEXPR, MOTHVAL_QEXPR };
+enum { MOTHVAL_NUM, MOTHVAL_ERR, MOTHVAL_SYM, MOTHVAL_SEXPR,
+       MOTHVAL_QEXPR, MOTHVAL_FUN };
+
+typedef mval* (*mbuiltin)(menv*, mval*);
 
 struct mothval {
     int type;
@@ -12,6 +26,8 @@ struct mothval {
     /* Error and symbol types have string data */
     char *err;
     char *sym;
+    mbuiltin fun;
+
     /* Count and pointer to a list of "mothval*" */
     int count;
     struct mothval **cell;
@@ -86,6 +102,112 @@ mothval *mothval_qexpr(void)
     return v;
 }
 
+mothval *mothval_fun(lbuiltin func)
+{
+    mothval *v = malloc(sizeof(mval));
+    v->type = MOTHVAL_FUN;
+    v->fun = func;
+    return v;
+}
+
+menv *menv_new(void)
+{
+    menv *e = malloc(sizeof(menv));
+    e->count = 0;
+    e->syms = NULL;
+    e->vals = NULL;
+    return e;
+}
+
+void menv_del(menv *e)
+{
+    for (int i = 0; i < e->count; i++) {
+        free(e->syms[i]);
+        mval_del(e->vals[i]);
+    }
+    free(e->syms);
+    free(e->vals);
+    free(e);
+}
+
+mval *menv_get(menv *e, mval *k)
+{
+    /* Iterate over all the values in the environment */
+    for (int i = 0; i < e->count; i++) {
+        /* If the stored string matches the symbol string,
+           return a copy of its value */
+        if (strcmp(e->syms[i], k->sym) == 0) {
+            return mval_copy(e->vals[i]);
+        }
+    }
+    /* No symbol found */
+    return mval_err("unbound symbol!");
+}
+
+void menv_put(menv* e, mval *k, mval *v)
+{
+    /* Iterate over all the elements in the environment
+       to check if the variable already exists */
+    for (int i = 0; i < e->count; i++) {
+        /* If the variable is found, delete the item at
+           that position and replace it with the variable
+           supplies by the user */
+        if (strcmp(e->syms[i], k->sym) == 0) {
+            mval_del(e->vals[i]);
+            e->vals[i] = mval_copy(v);
+            return;
+        }
+    }
+
+    /* If there's no existing entry, allocate space for the new one */
+    e->count++;
+    e->vals = realloc(e->vals, sizeof(mval *) * e->count);
+    e->syms = realloc(e->syms, sizeof(char *) * e->count);
+
+    /* Copy the contents of mval and symbol string into new location */
+    e->vals[e->count - 1] = mval_copy(v);
+    e->syms[e->count - 1] = malloc(strlen(k->sym) + 1);
+    strcpy(e->syms[e->count - 1], k->sym);
+}
+
+mval *mval_eval(menv *e, mval* v)
+{
+    if (v->type == MVAL_SYM) {
+        mval *x = menv_get(e, v);
+        mval_del(v);
+        return x;
+    }
+
+    if (v->type == MVAL_SEXPR) { return mval_eval_sexpr(e, v); }
+    return v;
+}
+
+mval *mval_eval_sexpr(menv *e, mval *e)
+{
+    for (int i = 0; i < v->count; i++) {
+        v->cell[i] = mval_eval(e, v->cell[i]);
+    }
+
+    for (int i = 0; i < v->count; i++) {
+        if (v->cell[i]->type == MVAL_ERR) { return mval_take(v, i); }
+    }
+
+    if (v->count == 0) { return v; }
+    if (v->count == 1) { return mval_take(v, 0); }
+
+    /* Ensure that the first element is a function, after eval */
+    mval *f = mval_pop(v, 0);
+    if (f->type != MVAL_FUN) {
+        mval_del(v); mval_del(f);
+        return mval_err("The first element is not a function");
+    }
+
+    /* Call function to get result */
+    mval *result = f->fun(e, v);
+    mval_del(f);
+    return result;
+}
+
 void mothval_del(mothval *v)
 {
     switch (v->type) {
@@ -94,6 +216,8 @@ void mothval_del(mothval *v)
     /* Free string data */
     case MOTHVAL_ERR: free(v->err); break;
     case MOTHVAL_SYM: free(v->sym); break;
+
+    case MOTHVAL_FUN: break;
 
     /* If Qexpr or Sexpr, delete all elements inside */
     case MOTHVAL_QEXPR:
@@ -196,9 +320,43 @@ void mothval_print(mothval *v)
     case MOTHVAL_NUM:   printf("%li", v->num); break;
     case MOTHVAL_ERR:   printf("Error: %s", v->err); break;
     case MOTHVAL_SYM:   printf("%s", v->sym); break;
+    case MOTHVAL_FUN:   printf("<function>"); break;
     case MOTHVAL_SEXPR: mothval_expr_print(v, '(', ')'); break;
     case MOTHVAL_QEXPR: mothval_expr_print(v, '{', '}'); break;
     }
+}
+
+mothval *mothval_copy(mothval *v)
+{
+    mothval *x = malloc(sizeof(mval));
+    x->type = v->type;
+
+    switch (v->type) {
+    /* Copy functions and numbers directly */
+    case MOTHVAL_FUN: x->fun = v->fun; break;
+    case MOTHVAL_NUM: x->num = v->num; break;
+
+    /* Copy strings */
+    case MOTHVAL_ERR:
+        x->err = malloc(strlen(v->err) + 1);
+        strcpy(x->err, v->err); break;
+
+    case MOTHVAL_SYM:
+        x->sym = malloc(strlen(v->sym) + 1);
+        strcpy(x->sym, v->sym); break;
+
+    /* Copy lists by copying each sub-expression */
+    case MOTHVAL_SEXPR:
+    case MOTHVAL_QEXPR:
+        x->count = v->count;
+        x->cell = malloc(sizeof(mothval *) * x->count);
+        for (int i = 0; i < x->count; i++) {
+            x->cell[i] = mothval_copy(v->cell[i]);
+        }
+        break;
+    }
+
+    return x;
 }
 
 void mothval_println(mothval *v) { mothval_print(v); putchar('\n'); }
@@ -240,6 +398,26 @@ mothval *builtin_op(mothval *a, char *op)
     }
     mothval_del(a);
     return x;
+}
+
+mothval *builtin_add(menv *e, mval *a)
+{
+    return builtin_op(e, a, "+");
+}
+
+mothval *builtin_sub(menv *e, mval *a)
+{
+    return builtin_op(e, a, "-");
+}
+
+mothval *builtin_mul(menv *e, mval *a)
+{
+    return builtin_op(e, a, "*");
+}
+
+mothval *builtin_div(menv *e, mval *a)
+{
+    return builtin_op(e, a, "/");
 }
 
 mothval *mothval_eval(mothval *v);
@@ -398,8 +576,7 @@ int main(int argc, char *argv[])
     mpca_lang(MPCA_LANG_DEFAULT,
               "                                                         \
                number   : /-?[0-9]+/ ;                                  \
-               symbol   : \"list\" | \"head\" | \"tail\"                \
-                        | \"join\" | \"eval\" | '+' | '-' | '*' | '/' ; \
+               symbol   : /[a-zA-Z0-9_+\\-*\\/\\\\=<>!&]+/ ;                                       \
                sexpr    : '(' <expr>* ')' ;                             \
                qexpr    : '{' <expr>* '}' ;                             \
                expr     : <number> | <symbol> | <sexpr> | <qexpr> ;     \
